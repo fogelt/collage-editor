@@ -63,8 +63,8 @@ impl Language {
 
     pub fn subtitle(self) -> &'static str {
         match self {
-            Self::English => "Drop photos, arrange them, and export a collage.",
-            Self::Swedish => "Släpp bilder, arrangera dem och exportera en kollage.",
+            Self::English => "Drop photos, arrange them across A4 pages, and export.",
+            Self::Swedish => "Släpp bilder, arrangera dem på A4-sidor och exportera.",
         }
     }
 
@@ -89,75 +89,52 @@ impl Language {
         }
     }
 
-    pub fn drop_here(self) -> &'static str {
-        match self {
-            Self::English => "Drop photos here to start",
-            Self::Swedish => "Släpp bilder här för att börja",
-        }
-    }
-
-    pub fn drop_hint(self) -> &'static str {
-        match self {
-            Self::English => "Drag in a batch, or click Add photos · JPG, PNG, WebP, TIFF and more",
-            Self::Swedish => {
-                "Dra in en batch, eller klicka på Lägg till bilder · JPG, PNG, WebP, TIFF med flera"
-            }
-        }
-    }
-
-    pub fn pattern_grid(self) -> &'static str {
-        match self {
-            Self::English => "Grid",
-            Self::Swedish => "Rutnät",
-        }
-    }
-
-    pub fn pattern_mosaic(self) -> &'static str {
-        match self {
-            Self::English => "Mosaic",
-            Self::Swedish => "Mosaik",
-        }
-    }
-
-    pub fn pattern_strip(self) -> &'static str {
-        match self {
-            Self::English => "Strip",
-            Self::Swedish => "Rad",
-        }
-    }
-
-    pub fn pattern_hero(self) -> &'static str {
-        match self {
-            Self::English => "Hero",
-            Self::Swedish => "Hjälte",
-        }
-    }
-
-    pub fn pattern_stack(self) -> &'static str {
-        match self {
-            Self::English => "Stack",
-            Self::Swedish => "Stapel",
-        }
-    }
-
     pub fn snap(self) -> &'static str {
         match self {
-            Self::English => "Snap",
-            Self::Swedish => "Snäpp",
+            Self::English => "Snap to grid",
+            Self::Swedish => "Snäpp till rutnät",
         }
     }
 
     pub fn clear(self) -> &'static str {
         match self {
-            Self::English => "Clear canvas",
-            Self::Swedish => "Rensa ytan",
+            Self::English => "Clear page",
+            Self::Swedish => "Rensa sida",
+        }
+    }
+
+    pub fn add_page(self) -> &'static str {
+        match self {
+            Self::English => "Add page",
+            Self::Swedish => "Lägg till sida",
+        }
+    }
+
+    pub fn page_label(self, number: usize) -> String {
+        match self {
+            Self::English => format!("Page {number}"),
+            Self::Swedish => format!("Sida {number}"),
+        }
+    }
+
+    pub fn page_indicator(self, current: usize, total: usize) -> String {
+        match self {
+            Self::English => format!("Page {current} of {total}"),
+            Self::Swedish => format!("Sida {current} av {total}"),
+        }
+    }
+
+    pub fn empty_page(self) -> &'static str {
+        match self {
+            Self::English => "Drop photos on this page",
+            Self::Swedish => "Släpp bilder på den här sidan",
         }
     }
 
     pub fn export_image(self) -> &'static str {
         match self {
-            Self::English => "Export image",
-            Self::Swedish => "Exportera bild",
+            Self::English => "Export page",
+            Self::Swedish => "Exportera sida",
         }
     }
 
@@ -168,17 +145,73 @@ impl Language {
         }
     }
 
-    pub fn save_image_title(self) -> &'static str {
+    pub fn export_all_pages(self) -> &'static str {
         match self {
-            Self::English => "Save collage image",
-            Self::Swedish => "Spara kollagebild",
+            Self::English => "Export all pages",
+            Self::Swedish => "Exportera alla sidor",
         }
     }
 
-    pub fn save_html_title(self) -> &'static str {
+    pub fn export_both(self) -> &'static str {
         match self {
-            Self::English => "Save collage as HTML",
-            Self::Swedish => "Spara kollage som HTML",
+            Self::English => "Export both",
+            Self::Swedish => "Exportera båda",
+        }
+    }
+
+    pub fn export_all_title(self) -> &'static str {
+        match self {
+            Self::English => "Choose a folder for the page images",
+            Self::Swedish => "Välj en mapp för sidbilderna",
+        }
+    }
+
+    pub fn export_both_title(self) -> &'static str {
+        match self {
+            Self::English => "Choose where to create the presentation folder",
+            Self::Swedish => "Välj var presentationsmappen ska skapas",
+        }
+    }
+
+    pub fn export_html_title(self) -> &'static str {
+        match self {
+            Self::English => "Choose a folder for the HTML gallery",
+            Self::Swedish => "Välj en mapp för HTML-galleriet",
+        }
+    }
+
+    pub fn sort_page(self) -> &'static str {
+        match self {
+            Self::English => "Sort page",
+            Self::Swedish => "Sortera sida",
+        }
+    }
+
+    pub fn close(self) -> &'static str {
+        match self {
+            Self::English => "Close",
+            Self::Swedish => "Stäng",
+        }
+    }
+
+    pub fn previous(self) -> &'static str {
+        match self {
+            Self::English => "Previous",
+            Self::Swedish => "Föregående",
+        }
+    }
+
+    pub fn next(self) -> &'static str {
+        match self {
+            Self::English => "Next",
+            Self::Swedish => "Nästa",
+        }
+    }
+
+    pub fn save_image_title(self) -> &'static str {
+        match self {
+            Self::English => "Save page image",
+            Self::Swedish => "Spara sidan som bild",
         }
     }
 
@@ -238,6 +271,13 @@ impl Language {
         }
     }
 
+    pub fn no_page_images(self) -> &'static str {
+        match self {
+            Self::English => "This page has no photos yet.",
+            Self::Swedish => "Den här sidan har inga bilder ännu.",
+        }
+    }
+
     pub fn no_supported_images(self) -> &'static str {
         match self {
             Self::English => "No supported image files found.",
@@ -264,6 +304,10 @@ impl Language {
             Self::English => "Collage",
             Self::Swedish => "Kollage",
         }
+    }
+
+    pub fn html_presentation(self) -> &'static str {
+        "Presentation"
     }
 
     pub fn photo_alt(self, number: usize) -> String {

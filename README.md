@@ -1,67 +1,92 @@
 # Collage Editor
 
-A lightweight desktop app for arranging photos into a collage and exporting the
-result. Built with Rust, [`iced`](https://iced.rs), and the `image` crate.
+Turn a set of photos into polished A4 collage pages, then export them as
+high-resolution images or a customer-ready web gallery.
 
-## Features
+## Install
 
-- Drag and drop many photos at once, or pick them from the file dialog.
-- Five starting layouts: grid, mosaic, strip, hero, and stack.
-- Free-form dragging on the canvas with optional grid snapping.
-- Export the collage as a high-resolution PNG or JPEG.
-- One-click export to a self-contained HTML file (images embedded as data URLs).
-- English and Svenska, remembered between launches.
+Download the installer for your platform from the
+[Releases](https://github.com/fogelt/collage-editor/releases) page:
+
+- **Windows** — `collage-editor_..._x64-setup.exe`
+- **macOS** — `.dmg` (Intel and Apple Silicon)
+- **Linux** — `.deb` or `.AppImage`
+
+Run the installer, then open **Collage Editor**.
+
+## Quick start
+
+1. Click **Add photos**, or drag photos or a folder onto the window.
+2. The photos are arranged automatically on the active A4 page.
+3. Drag photos to rearrange them, or drag a photo's corners to resize it.
+4. Add more pages when you need them.
+5. Export the current page, all pages, or a ready-to-send HTML gallery.
+
+## Pages
+
+The workspace is a horizontal strip of A4 pages. Scroll sideways to move
+between them, and click a page to make it active.
+
+- **Add page** appends a new page to the right.
+- **Sort page** rebuilds that page's automatic masonry layout.
+- **Export page** saves just that page as an image.
+- The **trash** button clears the active page.
+
+Importing many photos onto an empty page spreads them across new pages
+automatically, using about ten photos per page. Importing onto a page that
+already has photos adds the new photos there.
+
+## Arrange photos
+
+- Drag any photo anywhere on its page.
+- Drag a photo onto another page to move it there.
+- Dropping a photo on top of another photo leaves it exactly where you put it.
+- Select a photo, then drag any of its corner handles to resize it.
+- Turn on the **magnet** button to snap a photo's top-left corner to the grid.
+  Turn it off for completely free movement.
+
+## Export
+
+The bottom bar has three export options:
+
+| Button | What it does |
+| --- | --- |
+| **Export all pages** | Writes one high-resolution image for every page into a folder you choose. |
+| **Export HTML** | Writes a self-contained `index.html` gallery into a folder you choose. |
+| **Export both** | Creates a `presentation` folder containing every page image plus `index.html`. |
+
+Export dialogs start in the folder where your photos are.
+
+### The HTML gallery
+
+The exported gallery is designed to be sent to a customer:
+
+- A clean, light editorial layout.
+- Photos zoom subtly when hovered.
+- Click a photo to open a full-screen lightbox.
+- Navigate with the arrow buttons, arrow keys, or a swipe on touch screens.
+- Press `Escape` or click the background to close the lightbox.
+- Open `index.html#photo=5` to link straight to a specific photo.
 
 ## Controls
 
 | Control | Action |
 | --- | --- |
-| **Add photos** | Choose images from disk. Folders can also be dropped on the window. |
-| Photo tiles | Drag to move; drop near an edge, centre, another photo, or a grid line to snap. |
-| Pattern icons | Switch between grid, mosaic, strip, hero, and stack layouts. |
-| Magnet | Toggle grid and edge snapping. |
-| Trash | Clear the canvas. |
-| Download | Export the collage as an image. |
-| File icon | Export the collage as a standalone HTML page. |
-| Flags | Switch the whole interface between English and Swedish. |
+| **Add photos** | Choose images from disk, or drop photos or a folder on the window. |
+| Page strip | Scroll horizontally, or click a page to make it active. |
+| **Add page** | Add another A4 page. |
+| Photo tiles | Drag to move. Drag onto another page to move it there. |
+| Corner handles | Resize the selected photo. |
+| **Sort page** | Rebuild that page's masonry layout. |
+| **Export page** | Export that page as a PNG or JPEG. |
+| Magnet | Toggle grid snapping. |
+| Trash | Clear the active page. |
+| **Export all pages** | Export every page as an image. |
+| **Export HTML** | Export a self-contained HTML gallery. |
+| **Export both** | Export the page images and gallery together. |
+| Flags | Switch between English and Svenska. |
 
-## Build and run
+## Language
 
-```sh
-cargo run --release
-```
-
-Release builds are recommended: image decoding and the software renderer are
-optimized, and the app starts with a small memory footprint. To run the test
-suite:
-
-```sh
-cargo test
-```
-
-## Settings
-
-The language choice is stored in a small config file:
-
-- **Windows:** `%APPDATA%\collage-editor\settings.conf`
-- **macOS:** `~/Library/Application Support/collage-editor/settings.conf`
-- **Linux:** `$XDG_CONFIG_HOME/collage-editor/settings.conf` (or
-  `~/.config/collage-editor/settings.conf`)
-
-English is used when no config file exists.
-
-## Install
-
-Releases include native installers:
-
-- **Windows** — `.exe` (NSIS)
-- **macOS** — `.dmg` (Intel and Apple Silicon)
-- **Linux** — `.deb` or `.AppImage`
-
-## Project layout
-
-- `src/main.rs` — application state, UI, and window setup.
-- `src/canvas.rs` — interactive collage canvas and hit testing.
-- `src/collage.rs` — image loading, layout patterns, snapping, and export.
-- `src/i18n.rs` — translations and the persisted language preference.
-- `tools/` — scripts that generate the app icon and flag images.
+Use the flag buttons to switch the whole interface between English and
+Svenska. Your choice is remembered the next time you open the app.

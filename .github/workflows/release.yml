@@ -75,6 +75,15 @@ jobs:
           echo "Packaging failed after 3 attempts." >&2
           exit 1
 
+      - name: Ad-hoc sign the app inside the DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          for dmg in dist/*.dmg; do
+            echo "Signing $dmg"
+            bash tools/sign_macos_dmg.sh "$dmg" "Collage Editor"
+          done
+
       - name: Build installers
         if: runner.os != 'macOS'
         env:

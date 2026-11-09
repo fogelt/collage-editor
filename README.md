@@ -14,6 +14,19 @@ Download the installer for your platform from the
 
 Run the installer, then open **Collage Editor**.
 
+### macOS first launch
+
+If macOS shows a security warning the first time you open the app:
+
+1. Open the `.dmg` and drag **Collage Editor** into **Applications**.
+2. In **Applications**, Control-click (or right-click) **Collage Editor** and
+   choose **Open**.
+3. Click **Open** in the dialog.
+
+If macOS still blocks it, open **System Settings → Privacy & Security**, scroll
+down, and click **Open Anyway** next to Collage Editor. You only need to do this
+once.
+
 ## Quick start
 
 1. Click **Add photos**, or drag photos or a folder onto the window.

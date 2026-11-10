@@ -17,7 +17,6 @@ pub const CANVAS_W: f32 = 707.0;
 pub const CANVAS_H: f32 = 1000.0;
 pub const EXPORT_W: u32 = 2480;
 pub const EXPORT_H: u32 = 3508;
-pub const GRID_STEP: f32 = 0.05;
 
 const PREVIEW_MAX: u32 = 768;
 const JPEG_QUALITY: u8 = 92;
@@ -26,6 +25,9 @@ const MARGIN_Y: f32 = 0.018;
 const GAP: f32 = 0.006;
 const MIN_IMAGE_SIZE: f32 = 0.03;
 const MAX_ROW_IMAGES: usize = 4;
+/// How close an edge must be to a layout line before it snaps, in page
+/// fractions.
+const SNAP_DISTANCE: f32 = 0.02;
 
 #[derive(Debug, Clone)]
 pub struct CollageImage {
@@ -396,18 +398,104 @@ pub fn clamp_to_page(image: &CollageImage, x: f32, y: f32) -> (f32, f32) {
     )
 }
 
-/// Snap the image's top-left corner to the nearest grid line and keep the
-/// image on the page. Only the grid is used; other images, page edges, and the
-/// page centre never pull the image around.
-pub fn snap_to_grid(image: &CollageImage, x: f32, y: f32) -> (f32, f32) {
-    let left = snap_value(x - image.width / 2.0).clamp(0.0, (1.0 - image.width).max(0.0));
-    let top = snap_value(y - image.height / 2.0).clamp(0.0, (1.0 - image.height).max(0.0));
+/// Snap an image's edges to the masonry rhythm of the other images: page
+/// margins, neighbouring tile edges, and the masonry gap. This keeps dragged
+/// photos aligned with the automatic layout instead of a separate grid that
+/// the masonry does not follow.
+pub fn snap_to_layout(
+    image: &CollageImage,
+    x: f32,
+    y: f32,
+    images: &[CollageImage],
+    exclude: usize,
+) -> (f32, f32) {
+    let width = image.width;
+    let height = image.height;
+    let left = x - width / 2.0;
+    let top = y - height / 2.0;
+    let max_left = (1.0 - width).max(0.0);
+    let max_top = (1.0 - height).max(0.0);
 
-    (left + image.width / 2.0, top + image.height / 2.0)
+    let mut left_targets = vec![MARGIN_X, 1.0 - MARGIN_X - width, 0.5 - width / 2.0];
+    let mut top_targets = vec![MARGIN_Y, 1.0 - MARGIN_Y - height, 0.5 - height / 2.0];
+
+    for (index, other) in images.iter().enumerate() {
+        if index == exclude {
+            continue;
+        }
+
+        let other_left = other.left();
+        let other_right = other.left() + other.width;
+        let other_top = other.top();
+        let other_bottom = other.top() + other.height;
+
+        left_targets.extend([
+            other_left,
+            other_right - width,
+            other_right + GAP,
+            other_left - GAP - width,
+            other.x - width / 2.0,
+        ]);
+        top_targets.extend([
+            other_top,
+            other_bottom - height,
+            other_bottom + GAP,
+            other_top - GAP - height,
+            other.y - height / 2.0,
+        ]);
+    }
+
+    let left = nearest_snap(left, &left_targets, max_left).unwrap_or(left);
+    let top = nearest_snap(top, &top_targets, max_top).unwrap_or(top);
+
+    (left + width / 2.0, top + height / 2.0)
 }
 
-fn snap_value(value: f32) -> f32 {
-    (value / GRID_STEP).round() * GRID_STEP
+fn nearest_snap(value: f32, targets: &[f32], max: f32) -> Option<f32> {
+    targets
+        .iter()
+        .copied()
+        .filter(|target| target.is_finite() && *target >= 0.0 && *target <= max)
+        .filter(|target| (value - target).abs() <= SNAP_DISTANCE)
+        .min_by(|a, b| (value - a).abs().total_cmp(&(value - b).abs()))
+}
+
+/// Position an image while it is being dragged.
+///
+/// Snapping aligns edges with the current masonry layout, but the image is
+/// deliberately not clamped to the page here: it must be able to follow the
+/// pointer across a page boundary so dragging between pages feels continuous.
+pub fn drag_position(
+    image: &CollageImage,
+    x: f32,
+    y: f32,
+    snap: bool,
+    images: &[CollageImage],
+    exclude: usize,
+) -> (f32, f32) {
+    if snap {
+        snap_to_layout(image, x, y, images, exclude)
+    } else {
+        (x, y)
+    }
+}
+
+/// Settle a dropped image back onto its page.
+pub fn settle_on_page(
+    image: &CollageImage,
+    x: f32,
+    y: f32,
+    snap: bool,
+    images: &[CollageImage],
+    exclude: usize,
+) -> (f32, f32) {
+    let (x, y) = if snap {
+        snap_to_layout(image, x, y, images, exclude)
+    } else {
+        (x, y)
+    };
+
+    clamp_to_page(image, x, y)
 }
 
 pub fn export_image(images: &[CollageImage], path: &Path) -> Result<(), String> {
@@ -955,20 +1043,52 @@ mod tests {
     }
 
     #[test]
-    fn snapping_rounds_the_top_left_to_the_grid_only() {
+    fn snapping_aligns_with_the_masonry_layout() {
+        let mut images: Vec<_> = (0..2).map(|_| fake_image(1.0)).collect();
+        apply_masonry(&mut images);
+
+        let width = images[0].width;
+        let height = images[0].height;
+        let target_left = images[1].left();
+        let target_top = images[1].top();
+
+        // Start slightly off a neighbouring tile's corner; snapping should
+        // align both edges with the masonry layout.
+        let (x, y) = snap_to_layout(
+            &images[0],
+            target_left + width / 2.0 + 0.012,
+            target_top + height / 2.0 - 0.012,
+            &images,
+            0,
+        );
+
+        assert!((x - width / 2.0 - target_left).abs() < 1.0e-4);
+        assert!((y - height / 2.0 - target_top).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn snapping_leaves_far_positions_alone() {
+        let image = fake_image(1.0);
+        let (x, y) = snap_to_layout(&image, 0.31, 0.67, &[], 0);
+
+        assert!((x - 0.31).abs() < f32::EPSILON);
+        assert!((y - 0.67).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn dragging_follows_the_pointer_off_the_page_and_settles_back() {
         let image = fake_image(1.0);
 
-        let (x, y) = snap_to_grid(&image, 0.43, 0.62);
-        let left = x - image.width / 2.0;
-        let top = y - image.height / 2.0;
+        // While dragging, positions outside the page are preserved so the
+        // photo can cross into a neighbouring page without being pulled back.
+        let (x, y) = drag_position(&image, 1.35, 0.5, false, &[], 0);
+        assert!((x - 1.35).abs() < f32::EPSILON);
+        assert!((y - 0.5).abs() < f32::EPSILON);
 
-        assert!((left - 0.30).abs() < 1.0e-4);
-        assert!((top - 0.50).abs() < 1.0e-4);
-        assert!(left >= 0.0 && top >= 0.0);
-
-        let (x, y) = snap_to_grid(&image, 0.99, 0.99);
+        // Dropping clamps it back inside the page.
+        let (x, y) = settle_on_page(&image, 1.35, 0.5, false, &[], 0);
         assert!(x <= 1.0 - image.width / 2.0 + f32::EPSILON);
-        assert!(y <= 1.0 - image.height / 2.0 + f32::EPSILON);
+        assert!(y >= image.height / 2.0 - f32::EPSILON);
     }
 
     #[test]

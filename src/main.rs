@@ -18,11 +18,12 @@ use i18n::Language;
 use iced::futures::channel::mpsc::unbounded;
 use iced::widget::image::Handle as ImageHandle;
 use iced::widget::{
-    button, column, container, responsive, row, scrollable, text, tooltip, Row, Space,
+    button, column, container, mouse_area, operation, responsive, row, scrollable, text, tooltip,
+    Id, Row, Space,
 };
 use iced::{
-    border, mouse, theme, window, Alignment, Border, Color, Element, Length, Point, Shadow, Size,
-    Subscription, Task, Theme,
+    border, keyboard, mouse, theme, window, Alignment, Border, Color, Element, Length, Point,
+    Shadow, Size, Subscription, Task, Theme,
 };
 use iced_font_awesome::fa_icon_solid;
 
@@ -45,6 +46,17 @@ const SUCCESS_DIM: Color = Color::from_rgb8(21, 55, 45);
 /// per page in a tight masonry arrangement. Larger imports are split over
 /// several pages automatically.
 const PAGE_IMPORT_CAPACITY: usize = 10;
+
+const ZOOM_MIN: f32 = 0.5;
+const ZOOM_MAX: f32 = 2.5;
+const ZOOM_STEP: f32 = 0.25;
+/// Zoom change per wheel line. Smaller than a button step so the wheel feels
+/// smooth instead of jumping in large increments.
+const ZOOM_WHEEL_STEP: f32 = 0.1;
+/// Pixels per wheel line, used to normalise wheel and trackpad deltas.
+const WHEEL_LINE_HEIGHT: f32 = 60.0;
+/// Stable id for the horizontal page strip, used to scroll it manually.
+const PAGES_SCROLL_ID: &str = "collage-pages";
 
 const FLAG_EN: &[u8] = include_bytes!("../assets/flags/en.png");
 const FLAG_SV: &[u8] = include_bytes!("../assets/flags/sv.png");
@@ -159,6 +171,9 @@ struct App {
     resizing: Option<Resizing>,
     drop_target: Option<(usize, Point)>,
     snap: bool,
+    zoom: f32,
+    modifiers: keyboard::Modifiers,
+    confirm_clear_all: bool,
     hovered: bool,
     pending_loads: usize,
     load_errors: usize,
@@ -178,6 +193,9 @@ impl Default for App {
             resizing: None,
             drop_target: None,
             snap: true,
+            zoom: 1.0,
+            modifiers: keyboard::Modifiers::default(),
+            confirm_clear_all: false,
             hovered: false,
             pending_loads: 0,
             load_errors: 0,
@@ -189,12 +207,17 @@ impl Default for App {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+/// A photo in flight between pages. The photo is removed from its page when
+/// the drag starts and only inserted again when the drag ends, so crossing a
+/// page boundary never invalidates two page layouts at once.
 struct Drag {
+    /// The page currently under the pointer. The photo is drawn on this page
+    /// and dropped here.
     page: usize,
-    index: usize,
+    image: CollageImage,
     offset_x: f32,
     offset_y: f32,
+    moved: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -242,8 +265,14 @@ enum Message {
     ImageLoaded(usize, PathBuf, Result<CollageImage, String>),
     SetLanguage(Language),
     ToggleSnap,
-    Clear,
+    ZoomIn,
+    ZoomOut,
+    ResetZoom,
+    WheelScrolled(mouse::ScrollDelta),
+    ModifiersChanged(keyboard::Modifiers),
+    ClearAllPages,
     AddPage,
+    DeletePage(usize),
     SortPage(usize),
     ActivatePage(usize),
     DragStart {
@@ -251,11 +280,7 @@ enum Message {
         index: usize,
         pointer: Point,
     },
-    DragMove {
-        page: usize,
-        pointer: Point,
-    },
-    DragHover {
+    DragOver {
         page: usize,
         pointer: Point,
     },
@@ -281,20 +306,6 @@ enum Message {
 impl App {
     fn active(&self) -> &Page {
         &self.pages[self.active_page]
-    }
-
-    fn active_mut(&mut self) -> &mut Page {
-        if self.pages.is_empty() {
-            self.pages.push(Page::default());
-            self.active_page = 0;
-        }
-
-        let index = self.active_page.min(self.pages.len() - 1);
-        &mut self.pages[index]
-    }
-
-    fn active_has_images(&self) -> bool {
-        !self.active().images.is_empty()
     }
 
     fn page_source_directory(&self, page: usize) -> Option<&Path> {
@@ -429,7 +440,60 @@ impl App {
     }
 }
 
+/// Puts a floating photo back on a page without settling it. Used when an
+/// action interrupts a drag (for example sorting or switching pages).
+fn cancel_drag(app: &mut App) {
+    if let Some(drag) = app.dragging.take() {
+        if app.pages.is_empty() {
+            app.pages.push(Page::default());
+        }
+
+        let page = drag.page.min(app.pages.len() - 1);
+        let page_state = &mut app.pages[page];
+        let index = page_state.images.len();
+        page_state.images.push(drag.image);
+        page_state.selected = Some(index);
+        app.active_page = page;
+    }
+
+    app.drop_target = None;
+}
+
+/// Converts a wheel delta into a zoom change. Wheel up (positive `y`) zooms
+/// in, wheel down zooms out. Pixel-precision deltas from trackpads are scaled
+/// down so they feel as smooth as line-based mouse wheels.
+fn wheel_zoom(delta: mouse::ScrollDelta) -> f32 {
+    match delta {
+        mouse::ScrollDelta::Lines { y, .. } => y * ZOOM_WHEEL_STEP,
+        mouse::ScrollDelta::Pixels { y, .. } => y * ZOOM_WHEEL_STEP / WHEEL_LINE_HEIGHT,
+    }
+}
+
+/// Converts a wheel delta into a scroll offset, matching iced's normal
+/// scrollable behaviour: a vertical wheel scrolls vertically and a horizontal
+/// trackpad gesture scrolls horizontally. Shift swaps the axes. The wheel must
+/// not jump between pages sideways on its own.
+fn wheel_scroll(delta: mouse::ScrollDelta, shift: bool) -> (f32, f32) {
+    let (x, y) = match delta {
+        mouse::ScrollDelta::Lines { x, y } => (x * WHEEL_LINE_HEIGHT, y * WHEEL_LINE_HEIGHT),
+        mouse::ScrollDelta::Pixels { x, y } => (x, y),
+    };
+
+    if shift {
+        (-y, -x)
+    } else {
+        (-x, -y)
+    }
+}
+
 fn update(app: &mut App, message: Message) -> Task<Message> {
+    // The clear-all action uses a two-step confirmation. Any other action
+    // cancels it so an armed button cannot linger unnoticed.
+    if !matches!(message, Message::ClearAllPages) && app.confirm_clear_all {
+        app.confirm_clear_all = false;
+        app.notice = None;
+    }
+
     match message {
         Message::AddPhotos => {
             let picked = rfd::FileDialog::new()
@@ -501,44 +565,102 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             app.snap = !app.snap;
             Task::none()
         }
-        Message::Clear => {
+        Message::ZoomIn => {
+            app.zoom = (app.zoom + ZOOM_STEP).min(ZOOM_MAX);
+            Task::none()
+        }
+        Message::ZoomOut => {
+            app.zoom = (app.zoom - ZOOM_STEP).max(ZOOM_MIN);
+            Task::none()
+        }
+        Message::ResetZoom => {
+            app.zoom = 1.0;
+            Task::none()
+        }
+        Message::ModifiersChanged(modifiers) => {
+            app.modifiers = modifiers;
+            Task::none()
+        }
+        Message::WheelScrolled(delta) => {
+            if app.modifiers.control() {
+                if !app.exporting {
+                    app.zoom = (app.zoom + wheel_zoom(delta)).clamp(ZOOM_MIN, ZOOM_MAX);
+                }
+                Task::none()
+            } else {
+                let (x, y) = wheel_scroll(delta, app.modifiers.shift());
+
+                if x.abs() <= f32::EPSILON && y.abs() <= f32::EPSILON {
+                    Task::none()
+                } else {
+                    operation::scroll_by(
+                        Id::new(PAGES_SCROLL_ID),
+                        scrollable::AbsoluteOffset { x, y },
+                    )
+                }
+            }
+        }
+        Message::ClearAllPages => {
             if !app.exporting {
-                let page = app.active_mut();
-                page.images.clear();
-                page.selected = None;
-                app.dragging = None;
-                app.resizing = None;
-                app.drop_target = None;
-                app.notice = None;
+                if app.confirm_clear_all {
+                    app.pages = vec![Page::default()];
+                    app.active_page = 0;
+                    app.dragging = None;
+                    app.resizing = None;
+                    app.drop_target = None;
+                    app.confirm_clear_all = false;
+                    app.notice = None;
+                } else {
+                    cancel_drag(app);
+                    app.confirm_clear_all = true;
+                    app.notice = Some(Notice::error(app.language.clear_all_confirm().to_owned()));
+                }
             }
             Task::none()
         }
         Message::AddPage => {
+            cancel_drag(app);
             app.pages.push(Page::default());
             app.active_page = app.pages.len() - 1;
-            app.dragging = None;
             app.resizing = None;
-            app.drop_target = None;
             app.notice = None;
             Task::none()
         }
+        Message::DeletePage(page) => {
+            if !app.exporting && app.pages.len() > 1 && page < app.pages.len() {
+                app.pages.remove(page);
+
+                if app.active_page > page {
+                    app.active_page -= 1;
+                } else if app.active_page >= app.pages.len() {
+                    app.active_page = app.pages.len() - 1;
+                }
+
+                // Reinsert a floating photo after the page list changed so it
+                // lands on a page that still exists.
+                cancel_drag(app);
+                app.resizing = None;
+                app.notice = None;
+            }
+            Task::none()
+        }
         Message::SortPage(page) => {
+            cancel_drag(app);
+
             if let Some(page_state) = app.pages.get_mut(page) {
                 collage::apply_masonry(&mut page_state.images);
                 page_state.selected = None;
                 app.active_page = page;
-                app.dragging = None;
                 app.resizing = None;
-                app.drop_target = None;
             }
             Task::none()
         }
         Message::ActivatePage(page) => {
+            cancel_drag(app);
+
             if page < app.pages.len() {
                 app.active_page = page;
-                app.dragging = None;
                 app.resizing = None;
-                app.drop_target = None;
             }
             Task::none()
         }
@@ -548,51 +670,52 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             pointer,
         } => {
             if let Some(page_state) = app.pages.get_mut(page) {
-                if let Some(image) = page_state.images.get(index) {
+                if index < page_state.images.len() {
+                    let image = page_state.images.remove(index);
                     let offset_x = pointer.x - image.x;
                     let offset_y = pointer.y - image.y;
-                    let image = page_state.images.remove(index);
-                    page_state.images.push(image);
-                    let index = page_state.images.len() - 1;
-                    page_state.selected = Some(index);
+                    page_state.selected = None;
                     app.active_page = page;
                     app.dragging = Some(Drag {
                         page,
-                        index,
+                        image,
                         offset_x,
                         offset_y,
+                        moved: false,
                     });
+                    app.drop_target = Some((page, pointer));
                     app.resizing = None;
                 }
             }
             Task::none()
         }
-        Message::DragMove { page, pointer } => {
-            if let Some(drag) = app.dragging {
-                if drag.page == page {
-                    if let Some(page_state) = app.pages.get_mut(page) {
-                        let x = pointer.x - drag.offset_x;
-                        let y = pointer.y - drag.offset_y;
+        Message::DragOver { page, pointer } => {
+            if page < app.pages.len() {
+                let snap = app.snap;
 
-                        if let Some(image) = page_state.images.get_mut(drag.index) {
-                            let (x, y) = if app.snap {
-                                collage::snap_to_grid(image, x, y)
-                            } else {
-                                collage::clamp_to_page(image, x, y)
-                            };
+                if let Some(drag) = app.dragging.as_mut() {
+                    let raw_x = pointer.x - drag.offset_x;
+                    let raw_y = pointer.y - drag.offset_y;
 
-                            image.x = x;
-                            image.y = y;
-                        }
-
-                        app.drop_target = Some((page, pointer));
+                    if let Some(target) = app.pages.get(page) {
+                        let exclude = target.images.len();
+                        let (x, y) = collage::drag_position(
+                            &drag.image,
+                            raw_x,
+                            raw_y,
+                            snap,
+                            &target.images,
+                            exclude,
+                        );
+                        drag.image.x = x;
+                        drag.image.y = y;
                     }
+
+                    drag.page = page;
+                    drag.moved = true;
                 }
-            }
-            Task::none()
-        }
-        Message::DragHover { page, pointer } => {
-            if app.dragging.is_some() && page < app.pages.len() {
+
+                app.active_page = page;
                 app.drop_target = Some((page, pointer));
             }
             Task::none()
@@ -602,6 +725,8 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             index,
             corner,
         } => {
+            cancel_drag(app);
+
             if let Some(page_state) = app.pages.get_mut(page) {
                 if let Some(image) = page_state.images.get(index) {
                     let fixed = corner.fixed_corner(
@@ -621,7 +746,6 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                         start_width,
                         start_height,
                     });
-                    app.dragging = None;
                     app.drop_target = None;
                 }
             }
@@ -650,48 +774,37 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::PointerUp => {
-            if let Some(drag) = app.dragging {
-                if let Some((target_page, pointer)) = app.drop_target {
-                    if target_page != drag.page {
-                        let moved = app.pages.get_mut(drag.page).and_then(|page_state| {
-                            page_state.selected = None;
-
-                            if drag.index < page_state.images.len() {
-                                Some(page_state.images.remove(drag.index))
-                            } else {
-                                None
-                            }
-                        });
-
-                        if let Some(mut image) = moved {
-                            image.x = (pointer.x - drag.offset_x)
-                                .clamp(image.width / 2.0, 1.0 - image.width / 2.0);
-                            image.y = (pointer.y - drag.offset_y)
-                                .clamp(image.height / 2.0, 1.0 - image.height / 2.0);
-
-                            if let Some(target_state) = app.pages.get_mut(target_page) {
-                                let index = target_state.images.len();
-                                target_state.images.push(image);
-
-                                if let Some(image) = target_state.images.get_mut(index) {
-                                    let (x, y) = if app.snap {
-                                        collage::snap_to_grid(image, image.x, image.y)
-                                    } else {
-                                        collage::clamp_to_page(image, image.x, image.y)
-                                    };
-                                    image.x = x;
-                                    image.y = y;
-                                }
-
-                                target_state.selected = Some(index);
-                                app.active_page = target_page;
-                            }
-                        }
-                    }
+            // The floating photo is inserted into its page only now, so the
+            // page layouts stay untouched while the pointer crosses between
+            // them.
+            if let Some(mut drag) = app.dragging.take() {
+                if app.pages.is_empty() {
+                    app.pages.push(Page::default());
                 }
+
+                let snap = app.snap;
+                let page = drag.page.min(app.pages.len() - 1);
+                let page_state = &mut app.pages[page];
+
+                if drag.moved {
+                    let (x, y) = collage::settle_on_page(
+                        &drag.image,
+                        drag.image.x,
+                        drag.image.y,
+                        snap,
+                        &page_state.images,
+                        page_state.images.len(),
+                    );
+                    drag.image.x = x;
+                    drag.image.y = y;
+                }
+
+                let index = page_state.images.len();
+                page_state.images.push(drag.image);
+                page_state.selected = Some(index);
+                app.active_page = page;
             }
 
-            app.dragging = None;
             app.resizing = None;
             app.drop_target = None;
             Task::none()
@@ -860,6 +973,10 @@ fn subscription(_app: &App) -> Subscription<Message> {
         }
         iced::Event::Window(window::Event::FileHovered(_)) => Some(Message::HoverChanged(true)),
         iced::Event::Window(window::Event::FilesHoveredLeft) => Some(Message::HoverChanged(false)),
+        // Track modifiers so the wheel knows whether to zoom or scroll.
+        iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+            Some(Message::ModifiersChanged(modifiers))
+        }
         // End a drag or resize even when the button is released outside.
         iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
             Some(Message::PointerUp)
@@ -950,6 +1067,8 @@ fn header(app: &App) -> Element<'_, Message> {
 
 fn toolbar(app: &App) -> Element<'_, Message> {
     let language = app.language;
+    let has_images = app.pages.iter().any(|page| !page.images.is_empty());
+    let can_clear_all = !app.exporting && (has_images || app.pages.len() > 1);
 
     row![
         button(
@@ -964,21 +1083,61 @@ fn toolbar(app: &App) -> Element<'_, Message> {
         .padding([8, 12])
         .style(secondary_button),
         Space::new().width(Length::Fill),
+        zoom_controls(app),
+        Space::new().width(Length::Fill),
         toggle_icon_button(
             "magnet",
             language.snap(),
             app.snap,
             (!app.exporting).then_some(Message::ToggleSnap),
         ),
-        icon_button(
-            "trash",
-            language.clear(),
-            (app.active_has_images() && !app.exporting).then_some(Message::Clear),
+        toggle_icon_button(
+            "broom",
+            language.clear_all_pages(),
+            app.confirm_clear_all,
+            can_clear_all.then_some(Message::ClearAllPages),
         ),
     ]
     .spacing(6)
     .align_y(Alignment::Center)
     .width(Length::Fill)
+    .into()
+}
+
+fn zoom_controls(app: &App) -> Element<'_, Message> {
+    let language = app.language;
+    let enabled = !app.exporting;
+    let can_reset = enabled && (app.zoom - 1.0).abs() > f32::EPSILON;
+    let reset: Element<'_, Message> = tooltip(
+        button(
+            text(format!("{:.0}%", app.zoom * 100.0))
+                .size(11)
+                .color(if enabled { TEXT } else { MUTED }),
+        )
+        .on_press_maybe(can_reset.then_some(Message::ResetZoom))
+        .padding([6, 8])
+        .style(secondary_button),
+        tooltip_label(language.zoom_reset()),
+        tooltip::Position::Top,
+    )
+    .gap(6)
+    .into();
+
+    row![
+        icon_button(
+            "magnifying-glass-minus",
+            language.zoom_out(),
+            (enabled && app.zoom > ZOOM_MIN).then_some(Message::ZoomOut),
+        ),
+        reset,
+        icon_button(
+            "magnifying-glass-plus",
+            language.zoom_in(),
+            (enabled && app.zoom < ZOOM_MAX).then_some(Message::ZoomIn),
+        ),
+    ]
+    .spacing(4)
+    .align_y(Alignment::Center)
     .into()
 }
 
@@ -988,7 +1147,7 @@ fn pages_view(app: &App) -> Element<'_, Message> {
         let available_width = (size.width - plus_width - 52.0).max(120.0);
         let available_height = (size.height - 60.0).max(150.0);
 
-        let page_width = (available_height * (CANVAS_W / CANVAS_H)).min(available_width);
+        let page_width = (available_height * (CANVAS_W / CANVAS_H)).min(available_width) * app.zoom;
         let page_height = page_width * (CANVAS_H / CANVAS_W);
         let page_size = Size::new(page_width, page_height);
 
@@ -1001,12 +1160,21 @@ fn pages_view(app: &App) -> Element<'_, Message> {
             pages = pages.push(page_view(app, index, page, page_size));
         }
 
-        pages = pages.push(add_page_card(app.language, page_height + 8.0, plus_width));
+        pages = pages.push(add_page_card(app.language, page_size));
+
+        // Capture the wheel ourselves so Ctrl+wheel (and trackpad pinch, which
+        // Windows reports the same way) can zoom while a plain wheel keeps its
+        // normal scrolling behaviour. `mouse_area` lives *inside* the
+        // scrollable because iced forwards events to the content first; that
+        // makes the capture reliable even after a scrollbar appears.
+        let pages = mouse_area(pages).on_scroll(Message::WheelScrolled);
 
         scrollable(pages)
-            .direction(scrollable::Direction::Horizontal(
-                scrollable::Scrollbar::new(),
-            ))
+            .id(Id::new(PAGES_SCROLL_ID))
+            .direction(scrollable::Direction::Both {
+                horizontal: scrollable::Scrollbar::new(),
+                vertical: scrollable::Scrollbar::new(),
+            })
             .width(Length::Fill)
             .height(Length::Fill)
             .style(pages_scrollable_style)
@@ -1019,7 +1187,11 @@ fn pages_view(app: &App) -> Element<'_, Message> {
 
 fn page_view<'a>(app: &'a App, index: usize, page: &'a Page, size: Size) -> Element<'a, Message> {
     let active = index == app.active_page;
-    let drag_source = app.dragging.map(|drag| drag.page);
+    let floating = app
+        .dragging
+        .as_ref()
+        .filter(|drag| drag.page == index)
+        .map(|drag| &drag.image);
     let is_drop_target = app.dragging.is_some()
         && app
             .drop_target
@@ -1027,41 +1199,65 @@ fn page_view<'a>(app: &'a App, index: usize, page: &'a Page, size: Size) -> Elem
     let canvas = iced::widget::canvas(CollageCanvas {
         page: index,
         images: &page.images,
-        selected: if active { page.selected } else { None },
-        drag_source,
+        // Hide selection handles while a photo is in flight so an unrelated
+        // page selection cannot appear when the active page follows the drag.
+        selected: if active && app.dragging.is_none() {
+            page.selected
+        } else {
+            None
+        },
+        dragging: app.dragging.is_some(),
+        floating,
         resizing: app
             .resizing
             .filter(|resizing| resizing.page == index)
             .map(|resizing| resizing.corner),
-        grid: app.snap,
         empty_hint: app.language.empty_page(),
     })
     .width(Length::Fixed(size.width))
     .height(Length::Fixed(size.height));
 
     let has_images = !page.images.is_empty();
-    let label = row![
+    let compact = size.width < 340.0;
+    let mut label = Row::new()
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .width(Length::Fixed(size.width));
+
+    label = label.push(
         text(app.language.page_label(index + 1))
             .size(11)
             .color(if active { ACCENT } else { MUTED }),
-        Space::new().width(Length::Fill),
-        page_text_button(
-            "table-cells-large",
-            app.language.sort_page(),
-            (has_images && !app.exporting).then_some(Message::SortPage(index)),
-        ),
-        page_text_button(
-            "download",
-            app.language.export_image(),
-            (has_images && !app.exporting).then_some(Message::ExportPage(index)),
-        ),
-        text(app.language.photo_count(page.images.len()))
-            .size(10)
-            .color(MUTED),
-    ]
-    .spacing(6)
-    .align_y(Alignment::Center)
-    .width(Length::Fixed(size.width));
+    );
+    label = label.push(Space::new().width(Length::Fill));
+
+    let sort_message = (has_images && !app.exporting).then_some(Message::SortPage(index));
+    let export_message = (has_images && !app.exporting).then_some(Message::ExportPage(index));
+
+    label = label.push(if compact {
+        compact_icon_button("table-cells-large", app.language.sort_page(), sort_message)
+    } else {
+        page_text_button("table-cells-large", app.language.sort_page(), sort_message)
+    });
+    label = label.push(if compact {
+        compact_icon_button("download", app.language.export_image(), export_message)
+    } else {
+        page_text_button("download", app.language.export_image(), export_message)
+    });
+
+    if !compact {
+        label = label.push(
+            text(app.language.photo_count(page.images.len()))
+                .size(10)
+                .color(MUTED),
+        );
+    }
+
+    label = label.push(compact_icon_button(
+        "trash",
+        app.language.delete_page(),
+        (app.pages.len() > 1 && !app.exporting).then_some(Message::DeletePage(index)),
+    ));
 
     let page_column = column![label, canvas]
         .spacing(6)
@@ -1073,7 +1269,9 @@ fn page_view<'a>(app: &'a App, index: usize, page: &'a Page, size: Size) -> Elem
         .into()
 }
 
-fn add_page_card(language: Language, height: f32, width: f32) -> Element<'static, Message> {
+/// The add-page card is the same size as a page so the strip reads as a row of
+/// equal A4 sheets ending in a blank one.
+fn add_page_card(language: Language, page_size: Size) -> Element<'static, Message> {
     button(
         container(
             column![
@@ -1089,8 +1287,8 @@ fn add_page_card(language: Language, height: f32, width: f32) -> Element<'static
         .align_y(Alignment::Center),
     )
     .on_press(Message::AddPage)
-    .width(Length::Fixed(width))
-    .height(Length::Fixed(height))
+    .width(Length::Fixed(page_size.width))
+    .height(Length::Fixed(page_size.height))
     .padding(0)
     .style(add_page_button)
     .into()
@@ -1248,6 +1446,27 @@ fn icon_button(
         ))
         .on_press_maybe(message)
         .padding([7, 9])
+        .style(secondary_button),
+        tooltip_label(hint),
+        tooltip::Position::Top,
+    )
+    .gap(6)
+    .into()
+}
+
+fn compact_icon_button(
+    name: &'static str,
+    hint: &'static str,
+    message: Option<Message>,
+) -> Element<'static, Message> {
+    tooltip(
+        button(icon(
+            name,
+            11.0,
+            if message.is_some() { TEXT } else { MUTED },
+        ))
+        .on_press_maybe(message)
+        .padding([4, 6])
         .style(secondary_button),
         tooltip_label(hint),
         tooltip::Position::Top,

@@ -1,6 +1,6 @@
 [package]
 name = "collage-editor"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.88"
 description = "A simple desktop collage editor"
@@ -59,7 +59,7 @@ opt-level = 2
 [package.metadata.packager]
 product_name = "Collage Editor"
 identifier = "com.fogelt.collageeditor"
-version = "0.1.1"
+version = "0.1.2"
 description = "Arrange photos into a collage and export it."
 authors = ["fogelt"]
 publisher = "fogelt"

@@ -1,5 +1,8 @@
 //! Interactive collage canvas.
 
+use std::cell::Cell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::LazyLock;
 
 use iced::widget::canvas::{
@@ -8,7 +11,7 @@ use iced::widget::canvas::{
 use iced::widget::image::{FilterMethod, Handle as ImageHandle};
 use iced::{alignment, mouse, Alignment, Color, Point, Rectangle, Size};
 
-use crate::collage::{self, CollageImage, Corner, CANVAS_H, CANVAS_W, GRID_STEP};
+use crate::collage::{self, CollageImage, Corner, CANVAS_H, CANVAS_W};
 use crate::Message;
 
 const HANDLE_SIZE: f32 = 9.0;
@@ -42,14 +45,27 @@ pub struct CollageCanvas<'a> {
     pub page: usize,
     pub images: &'a [CollageImage],
     pub selected: Option<usize>,
-    pub drag_source: Option<usize>,
+    /// Whether any photo is currently being dragged. The dragged photo does
+    /// not belong to any page while it is in flight.
+    pub dragging: bool,
+    /// The floating photo, drawn on top of this page while the pointer is
+    /// over it. It is inserted into a page only when the drag ends.
+    pub floating: Option<&'a CollageImage>,
     pub resizing: Option<Corner>,
-    pub grid: bool,
     pub empty_hint: &'a str,
 }
 
+/// Static page geometry is cached per canvas. Pointer movement only redraws
+/// the small dynamic overlay (selection handles and custom cursor), so
+/// dragging one photo no longer repaints every page on every mouse event.
+#[derive(Default)]
+pub struct CanvasState {
+    cache: canvas::Cache,
+    fingerprint: Cell<u64>,
+}
+
 impl Program<Message> for CollageCanvas<'_> {
-    type State = ();
+    type State = CanvasState;
 
     fn update(
         &self,
@@ -97,24 +113,14 @@ impl Program<Message> for CollageCanvas<'_> {
                         page: self.page,
                         pointer: point,
                     }))
-                } else if self.drag_source == Some(self.page) {
-                    // Stop following the pointer once it leaves this page so a
-                    // neighbouring page can take over as the drop target.
-                    let cursor = cursor.position_in(bounds)?;
-                    let point = normalize(cursor, board);
-
-                    Some(canvas::Action::publish(Message::DragMove {
-                        page: self.page,
-                        pointer: point,
-                    }))
-                } else if self.drag_source.is_some() {
+                } else if self.dragging {
                     // Only claim the drop target when the pointer is actually
                     // inside this page; otherwise every page would report a
                     // position and steal the target from the hovered one.
                     let cursor = cursor.position_in(bounds)?;
                     let point = normalize(cursor, board);
 
-                    Some(canvas::Action::publish(Message::DragHover {
+                    Some(canvas::Action::publish(Message::DragOver {
                         page: self.page,
                         pointer: point,
                     }))
@@ -135,81 +141,46 @@ impl Program<Message> for CollageCanvas<'_> {
 
     fn draw(
         &self,
-        _state: &Self::State,
+        state: &Self::State,
         renderer: &iced::Renderer,
         _theme: &iced::Theme,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let mut frame = Frame::new(renderer, bounds.size());
         let board = board_rect(bounds);
+        let fingerprint = self.fingerprint(bounds);
 
-        // Soft board shadow.
-        frame.fill_rectangle(
-            Point::new(board.x + 6.0, board.y + 8.0),
-            board.size(),
-            Color::from_rgba8(0, 0, 0, 0.35),
-        );
-
-        let board_path =
-            Path::rounded_rectangle(Point::new(board.x, board.y), board.size(), 12.0.into());
-        frame.fill(&board_path, Color::WHITE);
-
-        if self.grid {
-            let grid_color = Color::from_rgba8(82, 100, 130, 0.125);
-            let steps = (1.0 / GRID_STEP).round() as usize;
-
-            // Build every line into a single path. Filling them one by one
-            // forces tiny-skia to allocate a full-surface mask per line, which
-            // costs more than the rest of the canvas combined.
-            let grid_path = Path::new(|path| {
-                for step in 1..steps {
-                    let x = board.x + step as f32 * GRID_STEP * board.width;
-                    path.rectangle(Point::new(x, board.y), Size::new(1.0, board.height));
-                }
-
-                for step in 1..steps {
-                    let y = board.y + step as f32 * GRID_STEP * board.height;
-                    path.rectangle(Point::new(board.x, y), Size::new(board.width, 1.0));
-                }
-            });
-
-            frame.fill(&grid_path, grid_color);
+        if state.fingerprint.get() != fingerprint {
+            state.cache.clear();
+            state.fingerprint.set(fingerprint);
         }
 
-        if self.images.is_empty() && !self.empty_hint.is_empty() {
-            frame.fill_text(CanvasText {
-                content: self.empty_hint.to_owned(),
-                position: board.center(),
-                color: Color::from_rgb8(132, 143, 166),
-                size: 14.0.into(),
-                align_x: Alignment::Center.into(),
-                align_y: alignment::Vertical::Center,
-                ..CanvasText::default()
-            });
-        }
+        let base = state.cache.draw(renderer, bounds.size(), |frame| {
+            self.draw_layout(frame, board);
+        });
 
-        for image in self.images {
+        // Selection handles and the custom hand follow the pointer, so they
+        // live in a separate layer that is cheap to redraw on every move.
+        let mut overlay = Frame::new(renderer, bounds.size());
+        let mut has_overlay = false;
+
+        // The floating photo is drawn in the cheap overlay layer instead of
+        // being inserted into a page. That keeps every page's cached layout
+        // untouched while the pointer travels across page boundaries.
+        if let Some(image) = self.floating {
+            has_overlay = true;
             let tile = image_rect(image, board);
             let draw_rect = contain_rect(tile, image.aspect);
-            let mut canvas_image = Image::new(image.handle.clone());
-            // Linear sampling looks best. Nearest-neighbour avoids the extra
-            // filtering work while a photo is being dragged.
-            canvas_image.filter_method = if self.drag_source == Some(self.page) {
-                FilterMethod::Nearest
-            } else {
-                FilterMethod::Linear
-            };
-
-            frame.draw_image(draw_rect, canvas_image);
+            overlay.draw_image(draw_rect, Image::new(image.handle.clone()));
         }
 
         if let Some(index) = self.selected {
             if let Some(image) = self.images.get(index) {
+                has_overlay = true;
                 let rect = image_rect(image, board);
                 let accent = Color::from_rgb8(96, 130, 255);
 
-                frame.stroke_rectangle(
+                overlay.stroke_rectangle(
                     Point::new(rect.x, rect.y),
                     rect.size(),
                     Stroke::default().with_color(accent).with_width(2.0),
@@ -225,8 +196,8 @@ impl Program<Message> for CollageCanvas<'_> {
                     }
                 });
 
-                frame.fill(&handles, Color::WHITE);
-                frame.stroke(
+                overlay.fill(&handles, Color::WHITE);
+                overlay.stroke(
                     &handles,
                     Stroke::default().with_color(accent).with_width(1.5),
                 );
@@ -237,7 +208,7 @@ impl Program<Message> for CollageCanvas<'_> {
         // cursor is hidden whenever this is visible.
         if self.resizing.is_none() {
             if let Some(position) = cursor.position_in(bounds) {
-                let grabbing = self.drag_source.is_some();
+                let grabbing = self.dragging;
                 let over_image = if grabbing {
                     true
                 } else {
@@ -247,6 +218,7 @@ impl Program<Message> for CollageCanvas<'_> {
                 };
 
                 if over_image {
+                    has_overlay = true;
                     let handle = if grabbing {
                         (*GRABBING_CURSOR).clone()
                     } else {
@@ -263,7 +235,7 @@ impl Program<Message> for CollageCanvas<'_> {
                     );
                     let mut image = Image::new(handle);
                     image.filter_method = FilterMethod::Linear;
-                    frame.draw_image(
+                    overlay.draw_image(
                         Rectangle::new(origin, Size::new(CURSOR_SIZE, CURSOR_SIZE)),
                         image,
                     );
@@ -271,7 +243,11 @@ impl Program<Message> for CollageCanvas<'_> {
             }
         }
 
-        vec![frame.into_geometry()]
+        if has_overlay {
+            vec![base, overlay.into_geometry()]
+        } else {
+            vec![base]
+        }
     }
 
     fn mouse_interaction(
@@ -290,7 +266,7 @@ impl Program<Message> for CollageCanvas<'_> {
 
         let board = board_rect(bounds);
 
-        if self.drag_source.is_some() {
+        if self.dragging {
             return mouse::Interaction::Hidden;
         }
 
@@ -309,6 +285,60 @@ impl Program<Message> for CollageCanvas<'_> {
 }
 
 impl CollageCanvas<'_> {
+    fn draw_layout(&self, frame: &mut Frame<iced::Renderer>, board: Rectangle) {
+        // Soft board shadow.
+        frame.fill_rectangle(
+            Point::new(board.x + 6.0, board.y + 8.0),
+            board.size(),
+            Color::from_rgba8(0, 0, 0, 0.35),
+        );
+
+        let board_path =
+            Path::rounded_rectangle(Point::new(board.x, board.y), board.size(), 12.0.into());
+        frame.fill(&board_path, Color::WHITE);
+
+        if self.images.is_empty() && !self.empty_hint.is_empty() {
+            frame.fill_text(CanvasText {
+                content: self.empty_hint.to_owned(),
+                position: board.center(),
+                color: Color::from_rgb8(132, 143, 166),
+                size: 14.0.into(),
+                align_x: Alignment::Center.into(),
+                align_y: alignment::Vertical::Center,
+                ..CanvasText::default()
+            });
+        }
+
+        for image in self.images {
+            let tile = image_rect(image, board);
+            let draw_rect = contain_rect(tile, image.aspect);
+            let mut canvas_image = Image::new(image.handle.clone());
+            canvas_image.filter_method = FilterMethod::Linear;
+
+            frame.draw_image(draw_rect, canvas_image);
+        }
+    }
+
+    fn fingerprint(&self, bounds: Rectangle) -> u64 {
+        let mut hasher = DefaultHasher::new();
+
+        bounds.width.to_bits().hash(&mut hasher);
+        bounds.height.to_bits().hash(&mut hasher);
+        self.empty_hint.hash(&mut hasher);
+        self.images.len().hash(&mut hasher);
+
+        for image in self.images {
+            image.path.hash(&mut hasher);
+            image.aspect.to_bits().hash(&mut hasher);
+            image.x.to_bits().hash(&mut hasher);
+            image.y.to_bits().hash(&mut hasher);
+            image.width.to_bits().hash(&mut hasher);
+            image.height.to_bits().hash(&mut hasher);
+        }
+
+        hasher.finish()
+    }
+
     fn handle_at(&self, point: Point, board: Rectangle) -> Option<Corner> {
         let image = self.images.get(self.selected?)?;
         let rect = image_rect(image, board);

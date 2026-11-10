@@ -91,15 +91,31 @@ impl Language {
 
     pub fn snap(self) -> &'static str {
         match self {
-            Self::English => "Snap to grid",
-            Self::Swedish => "Snäpp till rutnät",
+            Self::English => "Snap to layout",
+            Self::Swedish => "Snäpp till layout",
         }
     }
 
-    pub fn clear(self) -> &'static str {
+    pub fn clear_all_pages(self) -> &'static str {
         match self {
-            Self::English => "Clear page",
-            Self::Swedish => "Rensa sida",
+            Self::English => "Clear all pages",
+            Self::Swedish => "Rensa alla sidor",
+        }
+    }
+
+    pub fn clear_all_confirm(self) -> &'static str {
+        match self {
+            Self::English => "This removes every page. Click the broom button again to start over.",
+            Self::Swedish => {
+                "Detta tar bort alla sidor. Klicka på kvastknappen igen för att börja om."
+            }
+        }
+    }
+
+    pub fn delete_page(self) -> &'static str {
+        match self {
+            Self::English => "Delete page",
+            Self::Swedish => "Ta bort sida",
         }
     }
 
@@ -107,6 +123,27 @@ impl Language {
         match self {
             Self::English => "Add page",
             Self::Swedish => "Lägg till sida",
+        }
+    }
+
+    pub fn zoom_in(self) -> &'static str {
+        match self {
+            Self::English => "Zoom in",
+            Self::Swedish => "Zooma in",
+        }
+    }
+
+    pub fn zoom_out(self) -> &'static str {
+        match self {
+            Self::English => "Zoom out",
+            Self::Swedish => "Zooma ut",
+        }
+    }
+
+    pub fn zoom_reset(self) -> &'static str {
+        match self {
+            Self::English => "Reset zoom",
+            Self::Swedish => "Återställ zoom",
         }
     }
 

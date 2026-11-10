@@ -33,17 +33,26 @@ once.
 2. The photos are arranged automatically on the active A4 page.
 3. Drag photos to rearrange them, or drag a photo's corners to resize it.
 4. Add more pages when you need them.
-5. Export the current page, all pages, or a ready-to-send HTML gallery.
+5. Zoom the pages in or out with the buttons above the page strip.
+6. Export the current page, all pages, or a ready-to-send HTML gallery.
 
 ## Pages
 
-The workspace is a horizontal strip of A4 pages. Scroll sideways to move
-between them, and click a page to make it active.
+The workspace is a horizontal strip of A4 pages. A normal wheel or two-finger
+scroll pans the workspace as usual, and Ctrl + wheel (or a two-finger pinch)
+zooms. Drag the scrollbars to pan, and click a page to make it active.
 
 - **Add page** appends a new page to the right.
+- **Delete page** (trash icon in the page header) removes that page. The last
+  remaining page cannot be deleted.
 - **Sort page** rebuilds that page's automatic masonry layout.
 - **Export page** saves just that page as an image.
-- The **trash** button clears the active page.
+- The toolbar **broom** button clears every page after a confirmation click.
+
+Use Ctrl + mouse wheel, a two-finger pinch, or the zoom controls above the page
+strip to enlarge or shrink the pages. Click the percentage to reset the zoom to
+100%. When the pages are larger than the window, scroll normally or drag the
+scrollbars to pan in both directions.
 
 Importing many photos onto an empty page spreads them across new pages
 automatically, using about ten photos per page. Importing onto a page that
@@ -55,8 +64,9 @@ already has photos adds the new photos there.
 - Drag a photo onto another page to move it there.
 - Dropping a photo on top of another photo leaves it exactly where you put it.
 - Select a photo, then drag any of its corner handles to resize it.
-- Turn on the **magnet** button to snap a photo's top-left corner to the grid.
-  Turn it off for completely free movement.
+- Turn on the **magnet** button to snap a photo's edges to the masonry layout:
+  page margins, neighbouring photo edges, and the gaps between photos. Turn it
+  off for completely free movement.
 
 ## Export
 
@@ -87,13 +97,16 @@ The exported gallery is designed to be sent to a customer:
 | --- | --- |
 | **Add photos** | Choose images from disk, or drop photos or a folder on the window. |
 | Page strip | Scroll horizontally, or click a page to make it active. |
+| Zoom controls | Zoom the pages in or out. Click the percentage to reset to 100%. |
 | **Add page** | Add another A4 page. |
+| Delete page | Remove that page from the strip. |
 | Photo tiles | Drag to move. Drag onto another page to move it there. |
 | Corner handles | Resize the selected photo. |
 | **Sort page** | Rebuild that page's masonry layout. |
 | **Export page** | Export that page as a PNG or JPEG. |
-| Magnet | Toggle grid snapping. |
-| Trash | Clear the active page. |
+| Magnet | Toggle snapping to the masonry layout. |
+| Page trash | Clear the active page. |
+| Toolbar broom | Clear every page and start over (click twice to confirm). |
 | **Export all pages** | Export every page as an image. |
 | **Export HTML** | Export a self-contained HTML gallery. |
 | **Export both** | Export the page images and gallery together. |
